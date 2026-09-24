@@ -8,7 +8,7 @@ Why this repo exists: I'm being considered for a Platform Engineer role and want
 
 ## Status
 
-Day 3 of 4 (CI/CD with security gates) is done: [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs tests, `gitleaks`, `terraform fmt`/`validate`, `trivy config` on `terraform/` and `k8s/`, builds the image with Buildx (GitHub Actions layer cache), scans it with `trivy image`, pushes to GHCR on `main` only, and deploys to a throwaway `kind` cluster in CI to curl `/healthz` as a smoke test. Not yet built: Grafana dashboard/alerts, the deliberate incident. See [CLAUDE.md](CLAUDE.md) for the full day-by-day plan and acceptance criteria.
+Day 4 of 4 (observability, incident, polish) is done: Prometheus scrapes the API's own `/metrics`, one alert rule watches for pod restarts, a Grafana dashboard shows request rate/error rate/restarts, a real incident was staged and diagnosed ([`INCIDENT-001.md`](INCIDENT-001.md)), and an HPA was verified scaling real pods under real load. See [CLAUDE.md](CLAUDE.md) for the full day-by-day plan and acceptance criteria, and [RUNBOOK.md](RUNBOOK.md) for "the app is down, now what."
 
 ## What's here so far
 
@@ -19,8 +19,57 @@ Day 3 of 4 (CI/CD with security gates) is done: [`.github/workflows/ci.yml`](.gi
 - **`seed/seed.py`** — posts ~15 fake policies to a running API so there's something to look at.
 - **`tests/`** — pytest suite (5 tests) covering the endpoints and, directly, that audit rows actually land in the database on writes. Tests run against SQLite in-memory, not Postgres, so they don't require Docker (see Honesty notes).
 - **`terraform/`** — provisions a local `kind` (Kubernetes-in-Docker) cluster and installs `kube-prometheus-stack` into it via the `helm` provider. Nothing here touches any cloud account; `apply`/`destroy` only create and remove local Docker containers.
-- **`k8s/`** — manifests for the app itself: namespace, Postgres (Deployment + PVC + Service), the API (Deployment, 2 replicas, hardened `securityContext`, resource limits, `/healthz` probes), a Secret template (see below), and a NetworkPolicy restricting Postgres to the API pod.
+- **`k8s/`** — manifests for the app itself: namespace, Postgres (Deployment + PVC + Service), the API (Deployment, 2 replicas, hardened `securityContext`, resource limits, `/healthz` probes), a Secret template (see below), a NetworkPolicy restricting Postgres to the API pod, a `ServiceMonitor` + `PrometheusRule` for observability, a Grafana dashboard ConfigMap, and an HPA.
 - **`.github/workflows/ci.yml`** — five jobs on every push/PR: unit tests, a `gitleaks` secret scan, `terraform fmt`/`validate`, a `trivy config` scan of `terraform/` and `k8s/`, and a build that's scanned with `trivy image` before anything is pushed. On `main` only, the scanned image is pushed to GHCR tagged with the commit SHA, and a separate job spins up a throwaway `kind` cluster in the runner, deploys the app to it, and curls `/healthz` for real — not just "tests passed."
+- **Observability** — `Instrumentator().instrument(app).expose(app)` in [`app/main.py`](app/main.py) exposes `GET /metrics` (`prometheus-fastapi-instrumentator`). [`k8s/09-servicemonitor.yaml`](k8s/09-servicemonitor.yaml) tells the `kube-prometheus-stack` Prometheus to scrape it every 15s. [`k8s/10-prometheus-rule.yaml`](k8s/10-prometheus-rule.yaml) is one alert, `PodRestarting`, that fires on `increase(kube_pod_container_status_restarts_total[15m]) > 0`. [`k8s/grafana-dashboard.json`](k8s/grafana-dashboard.json) (loaded into the cluster via [`k8s/11-grafana-dashboard-configmap.yaml`](k8s/11-grafana-dashboard-configmap.yaml), auto-imported by Grafana's sidecar) shows request rate by status, 5xx error rate, and pod restarts.
+- **HPA** — [`k8s/12-hpa.yaml`](k8s/12-hpa.yaml) scales the API Deployment 2→5 replicas on CPU. It needs `metrics-server` (added to `terraform/main.tf`) to read real usage — without it an HPA just shows `<unknown>` forever.
+- **`INCIDENT-001.md`** — a deliberately staged incident (memory limit set too low → `OOMKilled`), diagnosed the way a real on-call engineer would, written up blameless.
+
+## Architecture
+
+```
+                      ┌─────────────────────────────────────────────┐
+                      │              kind cluster ("policyledger")  │
+                      │                                              │
+  developer  ──apply──▶  Terraform: kind_cluster + 2 helm_release    │
+  (terraform)          │  (kube-prometheus-stack, metrics-server)    │
+                      │                                              │
+                      │  ┌── namespace: policyledger ─────────────┐ │
+                      │  │                                         │ │
+  kubectl apply  ─────▶  │  Deployment (2-5 pods, HPA-scaled) ──┐  │ │
+  -f k8s/              │  │  policyledger-api  /healthz /metrics │  │ │
+                      │  │       │            └──────┬──────────┘  │ │
+                      │  │  NetworkPolicy            │             │ │
+                      │  │  (api → postgres only)    │ scraped by  │ │
+                      │  │       ▼                   ▼             │ │
+                      │  │  Deployment: postgres   ServiceMonitor  │ │
+                      │  │  (1 pod, PVC)                           │ │
+                      │  └─────────────────────────────────────────┘ │
+                      │                            │                 │
+                      │  ┌── namespace: monitoring ▼──────────────┐ │
+                      │  │  Prometheus  ──rule──▶ PodRestarting    │ │
+                      │  │       │        alert                    │ │
+                      │  │       └──datasource──▶ Grafana          │ │
+                      │  │                         (PolicyLedger    │ │
+                      │  │                          dashboard)      │ │
+                      │  └─────────────────────────────────────────┘ │
+                      └─────────────────────────────────────────────┘
+```
+
+Everything above runs as Docker containers on one laptop. Nothing here talks to a real cloud account.
+
+## What each piece proves
+
+| Piece | Proves |
+|---|---|
+| Multi-stage, non-root `Dockerfile` | Understand container hardening, not just "it runs" |
+| Append-only `audit_log` | Can design for auditability, a real fintech/compliance requirement |
+| Terraform (`kind_cluster` + 2x `helm_release`) | Can express infrastructure as versioned, reproducible code, not clicked-together state |
+| `securityContext`, resource limits, probes, NetworkPolicy | Know the Kubernetes hardening checklist, and *checked* the NetworkPolicy actually enforces (see Honesty notes) rather than assuming |
+| `gitleaks` + `trivy config` + `trivy image` in CI | Understand shift-left security gates, and that they have to actually be able to fail the build (see the deliberately-failing-run in the CI history) |
+| `ServiceMonitor` / `PrometheusRule` / Grafana dashboard | Can wire up real monitoring, not just install a chart — verified against live Prometheus/Grafana APIs, not just "manifest applied" |
+| `INCIDENT-001.md` | Can diagnose a real failure with `kubectl get/describe/logs`, distinguish an OOM kill from a config error, and write it up without blame |
+| HPA + metrics-server, verified with a load test | Know that autoscaling needs a metrics source to actually work, and proved it scales under real load rather than trusting the YAML |
 
 ## Running it locally
 
@@ -92,6 +141,36 @@ terraform destroy
 
 Verified: ran the full cycle above from a completely destroyed state (`terraform destroy` → confirmed `docker ps` and `kind get clusters` showed nothing left → `terraform apply` again), and the app worked identically on the rebuilt cluster.
 
+## Looking at monitoring (Prometheus + Grafana)
+
+```bash
+kubectl port-forward -n monitoring svc/kube-prometheus-stack-grafana 3000:80
+# admin password:
+kubectl get secret -n monitoring kube-prometheus-stack-grafana \
+  -o jsonpath='{.data.admin-password}' | base64 -d
+```
+
+Open `http://localhost:3000`, log in as `admin`, and the "PolicyLedger" dashboard is already there (Grafana's sidecar auto-imports any ConfigMap labeled `grafana_dashboard: "1"` — no manual import step). Prometheus's own UI, for checking scrape targets or firing alerts directly:
+
+```bash
+kubectl port-forward -n monitoring svc/prometheus-operated 9090:9090
+# http://localhost:9090/targets and http://localhost:9090/alerts
+```
+
+## Watching the HPA scale under load
+
+```bash
+kubectl port-forward -n policyledger svc/policyledger-api 8001:8000 &
+kubectl get hpa -n policyledger -w   # in another terminal
+
+# generate load against a real DB-backed endpoint
+for w in $(seq 1 25); do
+  ( end=$((SECONDS+150)); while [ $SECONDS -lt $end ]; do curl -s -o /dev/null http://localhost:8001/policies; done ) &
+done
+```
+
+Verified: 25 concurrent workers for 150s pushed CPU from 5% to 126% of the 50%-utilization target; the HPA scaled the Deployment 2 → 4 → 5 replicas within about a minute, then held at 5/52% until the load tapered off. This needs `metrics-server` (`terraform/main.tf`) — without it the HPA shows `<unknown>` targets forever, since there's nowhere for it to read live CPU/memory from.
+
 ## Image size
 
 | Build | Size |
@@ -115,6 +194,9 @@ Multi-stage is **not smaller** here, and I'm reporting that honestly rather than
 - **`trivy config` in CI only fails the build on CRITICAL/HIGH findings, not LOW.** Six LOW findings remain by choice: both Deployments' containers should run as `runAsUser`/`runAsGroup` > 10000 per Kubernetes Pod Security Standards guidance (KSV-0020/KSV-0021). The API's UID 1000 is baked into the Dockerfile's non-root user; Postgres's UID 999 is the official `postgres:16-alpine` image's own built-in user and matches the PVC's `fsGroup`. Changing either risks breaking a currently-working setup (volume permissions, in Postgres's case) to satisfy a LOW-severity check — a real fintech would track this as a backlog item, not block a release on it, so that's what this repo does too.
 - **CI's `trivy config` scan of `k8s/` never actually sees the real Secret manifest.** `k8s/02-secret.yaml` is gitignored and only ever exists on a developer's own machine (or, in CI, is generated fresh at deploy time in the smoke-test job with throwaway values) — so the committed `.example` template is all that's ever in the repo for `trivy config` to look at, and it's skipped anyway since `trivy` only scans `.yaml`/`.yml`/`.json` files by extension, not `.yaml.example`.
 - **`aquasecurity/trivy-action` is pinned to an exact version tag (`0.36.0`), not `@master` or a floating major.** This project had a real supply-chain compromise in March 2026 — a credential-stealing commit was injected into every tag from `0.0.1` through `0.34.2` for about 12 hours. `0.36.0` post-dates that incident. Worth remembering as a general lesson: a security-scanning tool is itself part of your supply chain and needs the same pinning discipline as everything else, not an exemption because it "is" the security gate.
+- **Alertmanager is disabled** (`terraform/main.tf`) — there's nowhere real to route a notification (no Slack/email/PagerDuty for a solo demo project). A fired alert is only ever inspected in Prometheus's own `/alerts` UI, not pushed anywhere. A real deployment would wire this to an actual on-call channel.
+- **`trivy config` checks that resource limits *exist*, not that their values are sane.** [`INCIDENT-001.md`](INCIDENT-001.md) proves this the hard way: a `16Mi` memory limit (enough to guarantee an immediate `OOMKilled`) passes `trivy config`'s KSV-0011 check cleanly, because the check is "is a limit set," not "is this a reasonable number." Nothing in this repo statically catches that class of mistake.
+- **`metrics-server` runs with `--kubelet-insecure-tls`, which is a kind-local-dev workaround, not something to carry into a real cluster.** kind's kubelet serves its metrics over a self-signed certificate that isn't part of any CA `metrics-server` trusts by default. A real cluster would have `metrics-server` verify the kubelet's certificate properly instead of skipping verification.
 
 ## What broke and how I fixed it
 
@@ -126,6 +208,8 @@ Multi-stage is **not smaller** here, and I'm reporting that honestly rather than
 - **`trivy image` found 3 real HIGH CVEs in `starlette`** (a FastAPI dependency, not something in `requirements.txt` directly) — `CVE-2024-47874`, `CVE-2026-48818`, `CVE-2026-54283`, all with fixes available in newer releases. `fastapi==0.115.0` (pinned since Day 1) only ever resolves to `starlette==0.38.6`, which predates all three fixes. Fix: bumped to `fastapi==0.141.1`, which resolves `starlette` to `1.7.0`. Re-ran the full test suite against the bump before touching anything else (all 5 passed) — a version bump that isn't verified against the tests is just a guess that it still works.
 - **`trivy image` also found 44 HIGH CVEs in OS packages** (`util-linux`, `ncurses`, `perl-base`) baked into the `python:3.12-slim` base image, with no fix available from Debian yet as of 2026-09-24 — `trivy` reports their status as `affected` or `fix_deferred`, meaning there's nothing to bump to. Since `trivy image` is meant to *fail the CI build* on HIGH/CRITICAL, an unfixable HIGH finding would mean the gate is permanently red, which defeats the point of having it. I checked whether a different base image would do better before just suppressing the check: `python:3.12-slim-bookworm` (the previous Debian release) was actually worse (55 HIGH + 5 CRITICAL — older packages, not fewer CVEs), but `python:3.12-alpine` scanned **completely clean** (0 findings), and every dependency already ships a `musllinux` wheel, so there was no compiler-toolchain cost to switching. Fixed by changing the Dockerfile's base image to `python:3.12-alpine` (both stages), and swapping `groupadd`/`useradd` for alpine's `addgroup`/`adduser` in the non-root-user setup. Confirmed by rebuilding, re-running all 5 tests, redeploying to the local `kind` cluster, and confirming `/healthz` and `/policies` still respond correctly. Side benefit: the image also shrank from 319MB to 192MB.
 - **A Postgres pod restarted once (self-healed) after applying the Day 3 `readOnlyRootFilesystem: true` hardening change.** Investigated rather than assumed-fine: `kubectl describe pod` showed a single `Liveness probe failed: /var/run/postgresql:5432 - no response` event, timed right when I'd just redeployed *both* Postgres and the API Deployments back-to-back on this laptop's local `kind` cluster. Reproduced in isolation by deleting the Postgres pod on its own and watching it: it went `Ready` in ~5 seconds, well inside the liveness probe's 15-second grace period, no restart. Conclusion: this was resource contention from redeploying two Deployments at once on a constrained local Docker Desktop VM, not a bug in the readonly-root-filesystem change itself — the liveness probe did exactly what it's supposed to do (catch a slow-starting container and let Kubernetes restart it) rather than silently leaving a broken pod in rotation. Left as-is rather than "fixed," since there was nothing wrong to fix.
+- **The Grafana dashboard's 5xx-rate query assumed exact status codes (`status=~"5.."`) and silently matched nothing.** `prometheus-fastapi-instrumentator`'s default `http_requests_total` metric groups the `status` label into classes (`"2xx"`, `"4xx"`, `"5xx"`), not exact codes like `"404"` — found by reading the library's own source and confirming with a live Prometheus query. Fixed by changing the regex to an exact match, `status="5xx"`.
+- **A deliberate `16Mi` memory-limit patch produced silent pods** — `kubectl logs --previous` on the `OOMKilled` container came back completely empty, because a cgroup OOM kill gives the process no chance to log anything on the way out. Full writeup, including confirming the `PodRestarting` alert actually transitioned to `firing` mid-incident, is in [`INCIDENT-001.md`](INCIDENT-001.md).
 
 ## Repo layout
 
