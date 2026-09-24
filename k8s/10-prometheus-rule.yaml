@@ -1,0 +1,30 @@
+# One alert: any container in the policyledger namespace that has
+# restarted in the last 15 minutes. kube-state-metrics (installed as part
+# of kube-prometheus-stack) already exposes restart counts per container,
+# so this needs no app-side instrumentation -- unlike the ServiceMonitor,
+# which depends on /metrics existing at all.
+#
+# Alertmanager is disabled (terraform/main.tf) -- there's nowhere to send
+# a real notification (no Slack/email/PagerDuty). A firing alert shows up
+# in Prometheus's own UI (Alerts tab) and nowhere else. Said plainly here
+# instead of implying this pages anyone.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: policyledger-alerts
+  namespace: policyledger
+  labels:
+    release: kube-prometheus-stack
+spec:
+  groups:
+    - name: policyledger
+      rules:
+        - alert: PodRestarting
+          expr: |
+            increase(kube_pod_container_status_restarts_total{namespace="policyledger"}[15m]) > 0
+          for: 0m
+          labels:
+            severity: warning
+          annotations:
+            summary: "{{ $labels.pod }} restarted in the policyledger namespace"
+            description: "Container {{ $labels.container }} in pod {{ $labels.pod }} has restarted in the last 15 minutes. Check `kubectl describe pod {{ $labels.pod }} -n policyledger` and `kubectl logs {{ $labels.pod }} -n policyledger --previous`."

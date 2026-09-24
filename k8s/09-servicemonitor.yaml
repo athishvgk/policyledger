@@ -1,0 +1,25 @@
+# Tells the kube-prometheus-stack Prometheus (installed by terraform/) to
+# scrape the api Service's /metrics endpoint every 15s. Without this,
+# Prometheus has no idea /metrics exists, no matter how well-instrumented
+# the app is -- this is a separate opt-in step, not automatic discovery.
+#
+# The `release: kube-prometheus-stack` label is required: it's not a
+# convention, it's what the chart's Prometheus object is actually
+# configured (via serviceMonitorSelector) to match. Confirmed on the live
+# cluster with:
+#   kubectl get prometheus -n monitoring -o jsonpath='{.items[0].spec.serviceMonitorSelector}'
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: policyledger-api
+  namespace: policyledger
+  labels:
+    release: kube-prometheus-stack
+spec:
+  selector:
+    matchLabels:
+      app: policyledger-api
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 15s

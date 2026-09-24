@@ -3,9 +3,12 @@ kind: Service
 metadata:
   name: policyledger-api
   namespace: policyledger
+  labels:
+    app: policyledger-api # matched by the ServiceMonitor's spec.selector (09-servicemonitor.yaml) -- separate from spec.selector below, which picks Pods, not this Service object itself
 spec:
   selector:
     app: policyledger-api
   ports:
-    - port: 8000
+    - name: http # named so the ServiceMonitor (09-servicemonitor.yaml) can target it
+      port: 8000
       targetPort: 8000
