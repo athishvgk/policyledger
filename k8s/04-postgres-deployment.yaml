@@ -17,11 +17,22 @@ spec:
         runAsNonRoot: true
         runAsUser: 999 # the postgres image's built-in "postgres" user
         fsGroup: 999
+        seccompProfile:
+          type: RuntimeDefault # blocks syscalls a normal app never needs; found missing by `trivy config` (KSV-0104)
       containers:
         - name: postgres
           image: postgres:16-alpine
           ports:
             - containerPort: 5432
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            # Postgres itself never writes outside PGDATA and its unix
+            # socket dir -- both mounted separately below -- so the rest of
+            # the container's filesystem can be locked read-only, same as
+            # the api container in 06-api-deployment.yaml.
+            readOnlyRootFilesystem: true
           env:
             - name: POSTGRES_DB
               valueFrom:
@@ -45,6 +56,10 @@ spec:
           volumeMounts:
             - name: postgres-data
               mountPath: /var/lib/postgresql/data
+            - name: postgres-run
+              mountPath: /var/run/postgresql # unix socket lives here; needs to be writable
+            - name: tmp
+              mountPath: /tmp
           readinessProbe:
             exec:
               command: ["pg_isready", "-U", "policyledger"]
@@ -66,3 +81,7 @@ spec:
         - name: postgres-data
           persistentVolumeClaim:
             claimName: postgres-data
+        - name: postgres-run
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}

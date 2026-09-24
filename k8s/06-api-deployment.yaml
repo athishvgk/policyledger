@@ -16,6 +16,8 @@ spec:
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000 # matches the "appuser" the Dockerfile creates
+        seccompProfile:
+          type: RuntimeDefault # blocks syscalls a normal app never needs; found missing by `trivy config` (KSV-0104)
       # Kubernetes has no docker-compose-style `depends_on: condition:
       # service_healthy`. Without this, the api pods start racing postgres
       # on every fresh deploy, fail their first connection, and crash once
@@ -29,6 +31,18 @@ spec:
             - sh
             - -c
             - until pg_isready -h postgres -p 5432 -U policyledger; do echo waiting for postgres; sleep 2; done
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true # only runs pg_isready in a loop; never writes a file
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
       containers:
         - name: api
           # Built locally and loaded straight into kind's node with
