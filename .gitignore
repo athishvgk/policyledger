@@ -10,6 +10,8 @@ override.tf
 override.tf.json
 *_override.tf
 *_override.tf.json
+# kubeconfig the kind provider writes next to the terraform config
+terraform/*-config
 
 # Python
 __pycache__/
