@@ -1,0 +1,9 @@
+# Non-secret settings only. The password lives in the Secret, not here.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: policyledger-config
+  namespace: policyledger
+data:
+  POSTGRES_DB: "policyledger"
+  POSTGRES_USER: "policyledger"

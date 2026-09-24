@@ -13,6 +13,9 @@ override.tf.json
 # kubeconfig the kind provider writes next to the terraform config
 terraform/*-config
 
+# Real k8s Secret manifest, generated locally from k8s/02-secret.yaml.example
+k8s/02-secret.yaml
+
 # Python
 __pycache__/
 *.py[cod]
