@@ -1,0 +1,175 @@
+# CI: tests, then three security gates (secret scan, IaC config scan, image
+# CVE scan), then -- only on main, only if every gate passed -- a push to
+# GHCR and a real deploy-and-curl smoke test on a throwaway kind cluster.
+#
+# Version pins checked against each action's own GitHub releases page on
+# 2026-09-24 (see CLAUDE.md's gotcha note: re-check before relying on this
+# blindly, these move). trivy-action is pinned to an exact version tag
+# rather than a floating one on purpose: aquasecurity/trivy-action had a
+# real supply-chain compromise in March 2026 (a credential-stealing commit
+# injected into tags 0.0.1 through 0.34.2 for about 12 hours). v0.36.0
+# post-dates that incident.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  test:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt -r requirements-dev.txt
+      - run: python -m pytest tests/ -v
+
+  secrets-scan:
+    name: gitleaks (secret scan)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # gitleaks scans full history, not just the latest commit
+      - uses: gitleaks/gitleaks-action@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  terraform-checks:
+    name: terraform fmt + validate
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: terraform
+    steps:
+      - uses: actions/checkout@v7
+      - uses: hashicorp/setup-terraform@v4
+      - run: terraform fmt -check -diff
+      - run: terraform init -backend=false
+      - run: terraform validate
+
+  iac-config-scan:
+    name: trivy config (terraform/, k8s/)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # Two separate scans, not one over the whole repo: keeps the failure
+      # obviously scoped to "which directory" without reading file paths.
+      - name: trivy config -- terraform/
+        uses: aquasecurity/trivy-action@0.36.0
+        with:
+          scan-type: config
+          scan-ref: terraform/
+          exit-code: "1"
+          severity: "CRITICAL,HIGH"
+      - name: trivy config -- k8s/
+        uses: aquasecurity/trivy-action@0.36.0
+        with:
+          scan-type: config
+          scan-ref: k8s/
+          exit-code: "1"
+          # MEDIUM/HIGH findings here were fixed for real (see README).
+          # The handful of remaining LOW findings (runAsUser/runAsGroup
+          # >10000) are a documented, accepted trade-off, not something
+          # this gate should block on.
+          severity: "CRITICAL,HIGH"
+
+  build-scan-push:
+    name: build image, trivy scan, push (main only)
+    runs-on: ubuntu-latest
+    needs: [test, secrets-scan, terraform-checks, iac-config-scan]
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.image-name.outputs.image }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Compute lowercase image name
+        # GHCR rejects uppercase in image names; a GitHub org/repo name can
+        # contain uppercase letters, so this can't be skipped.
+        id: image-name
+        run: echo "image=${REGISTRY}/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v4
+      - name: Build (load locally, for scanning)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          load: true
+          tags: policyledger-api:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: trivy image scan
+        uses: aquasecurity/trivy-action@0.36.0
+        with:
+          image-ref: policyledger-api:ci
+          exit-code: "1"
+          severity: "CRITICAL,HIGH"
+      - name: Log in to GHCR
+        if: github.ref == 'refs/heads/main'
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push (main only, tagged with the commit SHA)
+        if: github.ref == 'refs/heads/main'
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.image-name.outputs.image }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  smoke-test:
+    name: deploy to a throwaway kind cluster, curl /healthz
+    runs-on: ubuntu-latest
+    needs: build-scan-push
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - name: Build image (reuses the layer cache from build-scan-push)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          load: true
+          tags: policyledger-api:local
+          cache-from: type=gha
+      - uses: helm/kind-action@v1.15.0
+        with:
+          cluster_name: policyledger
+          wait: 120s
+      - name: Load image into kind
+        run: kind load docker-image policyledger-api:local --name policyledger
+      - name: Deploy namespace + config first (the Secret needs the namespace to exist)
+        run: kubectl apply -f k8s/00-namespace.yaml -f k8s/01-configmap.yaml
+      - name: Generate a throwaway Secret
+        # CI never sees the real k8s/02-secret.yaml -- it's gitignored and
+        # only ever exists on a developer's own machine (see .gitignore and
+        # k8s/02-secret.yaml.example). This one lives only on this runner's
+        # ephemeral kind cluster and is gone when the job ends.
+        run: |
+          kubectl create secret generic policyledger-secret \
+            --namespace policyledger \
+            --from-literal=POSTGRES_PASSWORD='ci-throwaway' \
+            --from-literal=DATABASE_URL='postgresql+psycopg2://policyledger:ci-throwaway@postgres:5432/policyledger' \
+            --dry-run=client -o yaml | kubectl apply -f -
+      - name: Deploy the rest of the app
+        run: kubectl apply -f k8s/
+      - name: Wait for rollout
+        run: |
+          kubectl rollout status deployment/postgres -n policyledger --timeout=120s
+          kubectl rollout status deployment/policyledger-api -n policyledger --timeout=120s
+      - name: Smoke test -- curl /healthz through the real Service
+        run: |
+          kubectl port-forward -n policyledger svc/policyledger-api 8001:8000 &
+          sleep 3
+          curl -sf http://localhost:8001/healthz
