@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 from typing import List
 
 from fastapi import Depends, FastAPI, Header, HTTPException
+from prometheus_fastapi_instrumentator import Instrumentator
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
@@ -42,6 +43,12 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="PolicyLedger", lifespan=lifespan)
+
+# Adds a GET /metrics endpoint in Prometheus's text format: request counts
+# and latency, labeled by path/method/status code. This alone doesn't get
+# scraped by anything -- that's what the ServiceMonitor in
+# k8s/09-servicemonitor.yaml is for.
+Instrumentator().instrument(app).expose(app)
 
 
 def _snapshot(policy: Policy) -> dict:
