@@ -1,0 +1,72 @@
+# Generated with:
+#   kubectl create configmap policyledger-grafana-dashboard \
+#     --namespace policyledger \
+#     --from-file=policyledger.json=k8s/grafana-dashboard.json \
+#     --dry-run=client -o yaml
+# then the grafana_dashboard label was added by hand below. Re-run that
+# command and re-add the label if grafana-dashboard.json changes.
+apiVersion: v1
+data:
+  policyledger.json: |
+    {
+      "title": "PolicyLedger",
+      "uid": "policyledger",
+      "schemaVersion": 39,
+      "timezone": "browser",
+      "refresh": "15s",
+      "time": { "from": "now-1h", "to": "now" },
+      "panels": [
+        {
+          "id": 1,
+          "title": "Request rate by status code",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+          "targets": [
+            {
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
+              "expr": "sum(rate(http_requests_total[1m])) by (status)",
+              "legendFormat": "{{status}}"
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "title": "5xx error rate",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": { "defaults": { "unit": "percentunit", "max": 1, "min": 0 }, "overrides": [] },
+          "targets": [
+            {
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
+              "expr": "sum(rate(http_requests_total{status=\"5xx\"}[5m])) / clamp_min(sum(rate(http_requests_total[5m])), 1e-9)",
+              "legendFormat": "5xx / total"
+            }
+          ]
+        },
+        {
+          "id": 3,
+          "title": "Pod restarts (last 15m)",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 24, "x": 0, "y": 8 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+          "targets": [
+            {
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
+              "expr": "increase(kube_pod_container_status_restarts_total{namespace=\"policyledger\"}[15m])",
+              "legendFormat": "{{pod}} / {{container}}"
+            }
+          ],
+          "description": "Same expression the PodRestarting alert (k8s/10-prometheus-rule.yaml) fires on -- if this panel goes above 0, that alert is firing too."
+        }
+      ]
+    }
+kind: ConfigMap
+metadata:
+  name: policyledger-grafana-dashboard
+  namespace: policyledger
+  labels:
+    grafana_dashboard: "1" # picked up by grafana's dashboard-sidecar, which watches ALL namespaces for this label -- confirmed on the live cluster by reading the sidecar container's env vars (LABEL=grafana_dashboard, LABEL_VALUE=1, NAMESPACE=ALL)
