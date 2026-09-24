@@ -3,11 +3,17 @@ from contextlib import asynccontextmanager
 from typing import List
 
 from fastapi import Depends, FastAPI, Header, HTTPException
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.database import Base, engine, get_db
 from app.models import AuditLog, Policy
 from app.schemas import PolicyCreate, PolicyOut, PolicyUpdate
+
+# Arbitrary fixed id for a Postgres advisory lock -- see the race-condition
+# note in lifespan() below. Any int64 works; it just has to be the same
+# constant every time this app starts.
+_SCHEMA_LOCK_ID = 727271
 
 
 @asynccontextmanager
@@ -17,7 +23,21 @@ async def lifespan(app: FastAPI):
     # a synthetic registry, so a one-line create_all is enough and keeps
     # every file easy to explain. Runs at startup (not import time) so tests
     # can swap in a different engine first.
-    Base.metadata.create_all(bind=engine)
+    #
+    # With 2 replicas (Day 2), both pods run this at once: both check
+    # "does `policies` exist?", both see no, both issue CREATE TABLE, and
+    # one crashes on a duplicate-table error. A Postgres advisory lock
+    # serializes that check-then-create so only one replica ever does it.
+    # SQLite (used by the test suite) has no such thing and never runs more
+    # than one process against one database, so it skips straight to
+    # create_all.
+    if engine.dialect.name == "postgresql":
+        with engine.begin() as conn:
+            conn.execute(text("SELECT pg_advisory_lock(:lock_id)"), {"lock_id": _SCHEMA_LOCK_ID})
+            Base.metadata.create_all(bind=conn)
+            conn.execute(text("SELECT pg_advisory_unlock(:lock_id)"), {"lock_id": _SCHEMA_LOCK_ID})
+    else:
+        Base.metadata.create_all(bind=engine)
     yield
 
 
