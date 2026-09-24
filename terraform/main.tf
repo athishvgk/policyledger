@@ -46,3 +46,25 @@ resource "helm_release" "kube_prometheus_stack" {
 
   depends_on = [kind_cluster.this]
 }
+
+# The Horizontal Pod Autoscaler (k8s/12-hpa.yaml) needs somewhere to read
+# live CPU/memory usage from -- that's metrics-server, not something
+# Kubernetes ships with by default. kind's kubelet serves its metrics over
+# a self-signed certificate that isn't part of any CA metrics-server
+# trusts out of the box, so --kubelet-insecure-tls is required here. This
+# is a kind-local-dev workaround, not something to carry into a real
+# cluster: see the README's honesty notes.
+resource "helm_release" "metrics_server" {
+  name       = "metrics-server"
+  repository = "https://kubernetes-sigs.github.io/metrics-server/"
+  chart      = "metrics-server"
+  namespace  = "kube-system"
+
+  values = [
+    yamlencode({
+      args = ["--kubelet-insecure-tls"]
+    })
+  ]
+
+  depends_on = [kind_cluster.this]
+}

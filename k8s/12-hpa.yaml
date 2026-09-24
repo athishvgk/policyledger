@@ -1,0 +1,28 @@
+# Scales the api Deployment between 2 and 5 replicas based on CPU usage.
+# Reads live usage from metrics-server (terraform/main.tf), which
+# Kubernetes does not ship with by default -- without it this object
+# exists but can never actually scale anything (it shows an
+# "unable to get metrics" condition until metrics-server is present).
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: policyledger-api
+  namespace: policyledger
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: policyledger-api
+  minReplicas: 2
+  maxReplicas: 5
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          # api requests 100m CPU (06-api-deployment.yaml); 50% of that
+          # request is a low bar on purpose, so a short local load test
+          # can actually trigger a scale-up without needing to hammer it
+          # for minutes.
+          averageUtilization: 50
