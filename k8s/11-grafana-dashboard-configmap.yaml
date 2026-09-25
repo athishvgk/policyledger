@@ -1,10 +1,16 @@
 # Generated with:
 #   kubectl create configmap policyledger-grafana-dashboard \
 #     --namespace policyledger \
-#     --from-file=policyledger.json=k8s/grafana-dashboard.json \
+#     --from-file=policyledger.json=k8s/dashboards/grafana-dashboard.json \
 #     --dry-run=client -o yaml
 # then the grafana_dashboard label was added by hand below. Re-run that
 # command and re-add the label if grafana-dashboard.json changes.
+#
+# grafana-dashboard.json lives in a subdirectory, not next to this file --
+# `kubectl apply -f k8s/` is not recursive, so a plain JSON file (no
+# apiVersion/kind) sitting directly in k8s/ gets swept up and kubectl
+# fails trying to parse it as a manifest. Keeping it one level down is
+# what keeps `kubectl apply -f k8s/` a valid "deploy everything" command.
 apiVersion: v1
 data:
   policyledger.json: |

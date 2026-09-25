@@ -163,7 +163,23 @@ jobs:
             --from-literal=DATABASE_URL='postgresql+psycopg2://policyledger:ci-throwaway@postgres:5432/policyledger' \
             --dry-run=client -o yaml | kubectl apply -f -
       - name: Deploy the rest of the app
-        run: kubectl apply -f k8s/
+        # Not a plain `kubectl apply -f k8s/`: this throwaway cluster is bare
+        # kind with no Prometheus Operator installed (the real cluster gets
+        # kube-prometheus-stack from terraform/main.tf's helm_release), so the
+        # CRDs behind k8s/09-servicemonitor.yaml and k8s/10-prometheus-rule.yaml
+        # (kind: ServiceMonitor / PrometheusRule, group monitoring.coreos.com)
+        # don't exist here and applying them fails with "no matches for kind".
+        # Excluded explicitly rather than installing the operator here, since
+        # this job only needs to prove the app itself deploys and serves
+        # /healthz -- monitoring is exercised for real against the Terraform
+        # cluster instead.
+        run: |
+          for f in k8s/*.yaml; do
+            case "$f" in
+              k8s/09-servicemonitor.yaml|k8s/10-prometheus-rule.yaml) continue ;;
+            esac
+            kubectl apply -f "$f"
+          done
       - name: Wait for rollout
         run: |
           kubectl rollout status deployment/postgres -n policyledger --timeout=120s
