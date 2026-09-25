@@ -63,14 +63,14 @@ jobs:
       # Two separate scans, not one over the whole repo: keeps the failure
       # obviously scoped to "which directory" without reading file paths.
       - name: trivy config -- terraform/
-        uses: aquasecurity/trivy-action@0.36.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: config
           scan-ref: terraform/
           exit-code: "1"
           severity: "CRITICAL,HIGH"
       - name: trivy config -- k8s/
-        uses: aquasecurity/trivy-action@0.36.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: config
           scan-ref: k8s/
@@ -107,7 +107,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
       - name: trivy image scan
-        uses: aquasecurity/trivy-action@0.36.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: policyledger-api:ci
           exit-code: "1"
