@@ -1,0 +1,78 @@
+# Manual deploy to Azure. Trigger-only (workflow_dispatch) on purpose: the
+# Azure environment is created for a demo and destroyed the same day, so this
+# must never run on its own and fail -- or spend -- against a cluster that
+# does not exist.
+#
+# It does NOT rebuild the image. It promotes the exact image CI already
+# tested and scanned (tagged with the commit SHA in GHCR) into Azure Container
+# Registry, so what runs in Azure is byte-for-byte what passed the gates.
+#
+# Login is OIDC: GitHub hands Azure a short-lived signed token; there is no
+# Azure password or client secret stored in this repo's settings.
+#
+# One-time setup: set these as repository *variables* (not secrets; none of
+# them is sensitive) from `terraform output` in terraform-azure/:
+#   AZURE_CLIENT_ID  AZURE_TENANT_ID  AZURE_SUBSCRIPTION_ID
+#   AZURE_RESOURCE_GROUP  AZURE_AKS_NAME  AZURE_ACR_NAME
+#   AZURE_KEY_VAULT_NAME  AZURE_CSI_CLIENT_ID
+name: Deploy to Azure (manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: "Commit SHA whose image CI already pushed to GHCR (default: the commit this run is on)"
+        required: false
+
+# The identity's federated credential only trusts refs/heads/main.
+permissions:
+  id-token: write # lets the job request the OIDC token Azure verifies
+  contents: read
+  packages: read # pull the image from GHCR
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      IMAGE_TAG: ${{ inputs.sha || github.sha }}
+      ACR_NAME: ${{ vars.AZURE_ACR_NAME }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: azure/login@v3
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Promote the CI-scanned image from GHCR to ACR
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          src="ghcr.io/${GITHUB_REPOSITORY,,}:${IMAGE_TAG}"
+          dst="${ACR_NAME}.azurecr.io/policyledger-api:${IMAGE_TAG}"
+          echo "${GHCR_TOKEN}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
+          az acr login --name "${ACR_NAME}"
+          docker pull "${src}"
+          docker tag "${src}" "${dst}"
+          docker push "${dst}"
+
+      - name: Point kubectl at the AKS cluster
+        run: |
+          az aks get-credentials \
+            --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
+            --name "${{ vars.AZURE_AKS_NAME }}" \
+            --admin
+
+      - name: Deploy
+        env:
+          KEY_VAULT_NAME: ${{ vars.AZURE_KEY_VAULT_NAME }}
+          TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          CSI_CLIENT_ID: ${{ vars.AZURE_CSI_CLIENT_ID }}
+        run: ./scripts/deploy-azure.sh
+
+      - name: Smoke test -- curl /healthz through the real Service
+        run: |
+          kubectl port-forward -n policyledger svc/policyledger-api 8001:8000 &
+          sleep 3
+          curl -sf http://localhost:8001/healthz

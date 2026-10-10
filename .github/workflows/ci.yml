@@ -43,11 +43,14 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   terraform-checks:
-    name: terraform fmt + validate
+    name: terraform fmt + validate (${{ matrix.dir }})
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        dir: [terraform, terraform-azure, terraform-azure/budget]
     defaults:
       run:
-        working-directory: terraform
+        working-directory: ${{ matrix.dir }}
     steps:
       - uses: actions/checkout@v7
       - uses: hashicorp/setup-terraform@v4
@@ -56,7 +59,7 @@ jobs:
       - run: terraform validate
 
   iac-config-scan:
-    name: trivy config (terraform/, k8s/)
+    name: trivy config (terraform/, k8s/, terraform-azure/, k8s-azure/)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -79,6 +82,22 @@ jobs:
           # The handful of remaining LOW findings (runAsUser/runAsGroup
           # >10000) are a documented, accepted trade-off, not something
           # this gate should block on.
+          severity: "CRITICAL,HIGH"
+      - name: trivy config -- terraform-azure/
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: config
+          scan-ref: terraform-azure/
+          exit-code: "1"
+          severity: "CRITICAL,HIGH"
+          # Two accepted, documented demo-only findings (see the file).
+          trivyignores: terraform-azure/.trivyignore
+      - name: trivy config -- k8s-azure/
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: config
+          scan-ref: k8s-azure/
+          exit-code: "1"
           severity: "CRITICAL,HIGH"
 
   build-scan-push:
