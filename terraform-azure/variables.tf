@@ -16,9 +16,9 @@ variable "name" {
 }
 
 variable "node_vm_size" {
-  description = "VM size for the single AKS node. Check availability and quota in your region before applying (az vm list-skus / az vm list-usage)."
+  description = "VM size for the single AKS node (must be x86, 2+ vCPU, 4+ GB). Checked available in eastus2 for this subscription; re-check with az vm list-skus before using another region."
   type        = string
-  default     = "Standard_B2s"
+  default     = "Standard_D2as_v7"
 }
 
 variable "node_count" {
