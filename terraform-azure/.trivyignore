@@ -1,0 +1,13 @@
+# Accepted for a same-day demo that is destroyed after use. Both are real
+# gaps, documented in README.md ("Azure variant" -> "Not hardened").
+#
+# AZU-0013: Key Vault accepts connections from any network. Access is still
+#   gated by Entra ID + RBAC and logged. Locking it to a firewall would also
+#   block Terraform on a laptop and the AKS pods without IP allow-lists or
+#   private endpoints. Production: private endpoint + deny by default.
+AZU-0013
+# AZU-0041: the Kubernetes API server is reachable from any IP (still needs
+#   credentials). GitHub-hosted runners use rotating IPs, so an allow-list
+#   would break the deploy workflow. Production: private cluster + a
+#   self-hosted runner inside the network.
+AZU-0041
