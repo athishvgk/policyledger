@@ -1,0 +1,21 @@
+# Tells Azure's managed Prometheus scraper (the ama-metrics pods installed by
+# the AKS monitor_metrics add-on) to read the API's /metrics every 30s.
+#
+# This is the Azure twin of k8s/09-servicemonitor.yaml. The only differences:
+# the apiVersion (the add-on has its own copy of the CRD under the
+# azmonitoring.coreos.com group, so it does not clash with a self-installed
+# Prometheus Operator) and no `release:` label, which belongs to the
+# kube-prometheus-stack chart and means nothing here.
+apiVersion: azmonitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: policyledger-api
+  namespace: policyledger
+spec:
+  selector:
+    matchLabels:
+      app: policyledger-api
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 30s

@@ -82,6 +82,10 @@ resource "azurerm_kubernetes_cluster" "this" {
   key_vault_secrets_provider {
     secret_rotation_enabled = false
   }
+
+  # Installs Azure's Prometheus scraper (the "ama-metrics" pods). Where the
+  # samples go is decided by the data collection rule in monitoring.tf.
+  monitor_metrics {}
 }
 
 # Lets the cluster's nodes pull images from our registry (and nothing else).

@@ -32,3 +32,15 @@ variable "github_repository" {
   type        = string
   default     = "athishvgk/policyledger"
 }
+
+variable "grafana_major_version" {
+  description = "Grafana major version for Azure Managed Grafana."
+  type        = string
+  default     = "12"
+}
+
+variable "grafana_sku" {
+  description = "Managed Grafana tier. Standard is about $0.034/hour in eastus2 plus $6 per user per month; Essential has no hourly charge but fewer features."
+  type        = string
+  default     = "Standard"
+}

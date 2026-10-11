@@ -31,3 +31,12 @@ output "github_client_id" {
 output "get_credentials_command" {
   value = "az aks get-credentials --resource-group ${azurerm_resource_group.this.name} --name ${azurerm_kubernetes_cluster.this.name} --admin"
 }
+
+output "grafana_name" {
+  value = azurerm_dashboard_grafana.this.name
+}
+
+output "grafana_url" {
+  description = "Open this in a browser and sign in with your Azure account."
+  value       = azurerm_dashboard_grafana.this.endpoint
+}
