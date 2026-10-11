@@ -217,7 +217,7 @@ One real defect surfaced: an API pod restarted once at startup. Cause and fix ar
 - **No Prometheus or Grafana on Azure** (skipped on purpose; see below).
 - **Actual cost was not checked against the Azure bill.** The ~$0.15–0.17 per hour figure comes from Azure's public retail price list for the VM, public IP, disk and registry; the load balancer rate is from memory because the price API returned no row for it.
 
-The environment bills by the hour while it exists, which is why the run ends with `terraform destroy` the same day.
+The environment bills by the hour while it exists, which is why the run ends with `terraform destroy` the same day. **In practice this one was not torn down the same day:** it ran for about 40 hours (roughly $6–7 at list price, an estimate, not a checked bill) before I destroyed it on 2026-10-11. Nothing alerts you to a forgotten environment except the budget email, which is the lesson. After `terraform destroy` the resource group no longer existed, nothing tagged `project=policyledger` remained, and no Key Vault was left soft-deleted; the separate budget alarm was still in place.
 
 **Not hardened (deliberate, same-day demo):**
 
